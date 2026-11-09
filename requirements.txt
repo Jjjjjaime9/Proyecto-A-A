@@ -10,3 +10,9 @@ joblib==1.5.3
 nbformat==5.10.4
 nbconvert==7.16.6
 ipykernel==7.1.0
+# Servicio (API común) y pruebas
+fastapi==0.123.9
+uvicorn==0.38.0
+pydantic==2.12.5
+httpx==0.28.1
+pytest==9.2.0
