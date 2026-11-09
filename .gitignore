@@ -6,3 +6,6 @@ venv/
 .env
 .DS_Store
 Thumbs.db
+
+# ZIP de entrega generados por src/empaquetar.py
+entregas/

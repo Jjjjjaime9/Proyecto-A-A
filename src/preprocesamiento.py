@@ -283,13 +283,21 @@ def preparar(df: pd.DataFrame) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 
-def columnas_features(linea: str) -> dict[str, list[str]]:
+def columnas_features(linea: str, con_objetivo_cruzado: bool = False) -> dict[str, list[str]]:
     """Columnas de entrada por tipo para cada línea de trabajo.
 
-    - Clasificación: todo salvo `diabetes` (los días de mala salud física son una
-      respuesta más de la encuesta y, por tanto, una entrada legítima).
-    - Regresión: todo salvo `dias_salud_fisica_mala` (`diabetes` sí entra).
-    - Clustering: subconjunto interpretable `COLS_CLUSTERING`.
+    - Clasificación: todo salvo los dos objetivos.
+    - Regresión: todo salvo los dos objetivos.
+    - Clustering: subconjunto interpretable `COLS_CLUSTERING` (incluye ambos
+      objetivos, porque describen el perfil de salud y no hay nada que predecir).
+
+    **Objetivos cruzados** (revisión pedida en el PC1): usar el objetivo de una línea
+    como predictor de la otra (`dias_salud_fisica_mala` → `diabetes`, `diabetes` →
+    `dias_salud_fisica_mala`) no mejora nada en validación cruzada (ΔROC-AUC ≈ 0,
+    ΔMAE ≈ 0; notebook 03, sección 2). Por eso se descartan: además, obligarían a la
+    API a exigir una columna que, en un cribado real, es justo lo que se desconoce, y
+    una columna ausente en la petición haría fallar la línea entera.
+    `con_objetivo_cruzado=True` las vuelve a incluir solo para reproducir esa prueba.
     """
     if linea == "clustering":
         return {
@@ -297,22 +305,40 @@ def columnas_features(linea: str) -> dict[str, list[str]]:
             "ordinales": [c for c in COLS_CLUSTERING if c in COLS_ORDINALES],
             "binarias": [c for c in COLS_CLUSTERING if c in COLS_BINARIAS + [TARGET_CLASIF]],
         }
-    if linea == "clasificacion":
-        return {
-            "continuas": COLS_CONTINUAS + [TARGET_REGR],
-            "ordinales": COLS_ORDINALES + COLS_FEATURES_NUEVAS_ORD,
-            "binarias": COLS_BINARIAS + COLS_FEATURES_NUEVAS_BIN,
-        }
-    if linea == "regresion":
-        return {
-            "continuas": COLS_CONTINUAS,
-            "ordinales": COLS_ORDINALES + COLS_FEATURES_NUEVAS_ORD,
-            "binarias": COLS_BINARIAS + COLS_FEATURES_NUEVAS_BIN + [TARGET_CLASIF],
-        }
-    raise ValueError(f"Línea desconocida: {linea!r}. Opciones: {LINEAS}")
+    if linea not in ("clasificacion", "regresion"):
+        raise ValueError(f"Línea desconocida: {linea!r}. Opciones: {LINEAS}")
+    cols = {
+        "continuas": list(COLS_CONTINUAS),
+        "ordinales": COLS_ORDINALES + COLS_FEATURES_NUEVAS_ORD,
+        "binarias": COLS_BINARIAS + COLS_FEATURES_NUEVAS_BIN,
+    }
+    if con_objetivo_cruzado:
+        if linea == "clasificacion":
+            cols["continuas"].append(TARGET_REGR)
+        else:
+            cols["binarias"] = cols["binarias"] + [TARGET_CLASIF]
+    return cols
 
 
-def construir_preprocesador(linea: str) -> Pipeline:
+def columnas_crudas(linea: str, con_objetivo_cruzado: bool = False) -> list[str]:
+    """Columnas del CSV crudo que necesita realmente cada línea de trabajo.
+
+    Es el conjunto mínimo de entrada del modelo: se traduce `es_hombre` a `sexo` y se
+    quitan las variables derivadas, que se calculan dentro del pipeline. Ajustar el
+    modelo solo con estas columnas hace que `feature_names_in_` pida exactamente lo
+    necesario, y el servicio descarta el resto (PII, id, gestión, otros objetivos).
+    """
+    derivadas = set(COLS_FEATURES_NUEVAS_ORD + COLS_FEATURES_NUEVAS_BIN)
+    columnas = []
+    for bloque in columnas_features(linea, con_objetivo_cruzado).values():
+        for col in bloque:
+            if col in derivadas:
+                continue
+            columnas.append("sexo" if col == "es_hombre" else col)
+    return columnas
+
+
+def construir_preprocesador(linea: str, con_objetivo_cruzado: bool = False) -> Pipeline:
     """Pipeline crudo → matriz lista para modelar.
 
     1. `preparar`: limpieza determinista + variables derivadas.
@@ -321,7 +347,7 @@ def construir_preprocesador(linea: str) -> Pipeline:
        - binarias: imputación por la moda (se quedan en 0/1). En clustering también
          se estandarizan para que todas las variables pesen igual en las distancias.
     """
-    cols = columnas_features(linea)
+    cols = columnas_features(linea, con_objetivo_cruzado)
     numerico = make_pipeline(SimpleImputer(strategy="median"), StandardScaler())
     binario = SimpleImputer(strategy="most_frequent")
     if linea == "clustering":
